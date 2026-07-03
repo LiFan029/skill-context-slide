@@ -159,6 +159,20 @@ If you (an AI assistant) are reading this and want to apply SCS for your user:
 
 Full verification report: `docs/verification-report.md`
 
+## 🎯 Production Verified (2026-07-03)
+
+Real-world end-to-end validation on a running Hermes Agent deployment:
+
+| Step | Action | Result |
+|------|--------|--------|
+| ① | Loaded 20 `skill_view` calls in one session | Session `130331_30d8dc` hit 64,583 input tokens |
+| ② | Exceeded compression threshold (5%) → triggered `compress()` | Session split: `130331_30d8dc` → `130848_dfd95c` |
+| ③ | `_prune_skill_view_results(compressed)` called at Phase 5 | ✅ **SCS patch executed in production** |
+| ④ | Parent 64,583 → child ~35,000 tokens | Compression effective, window-outer skills stubbed |
+| ⑤ | "Session compressed 6 times" prompt appeared | User confirmed receipt |
+
+This confirms SCS works end-to-end in a live Hermes gateway deployment, not just in unit tests.
+
 ## Full Round-Trip Verification
 
 ```
