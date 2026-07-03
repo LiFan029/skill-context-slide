@@ -1,0 +1,107 @@
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index fbde99bda..a051086d3 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -2011,6 +2011,92 @@ This compaction should PRIORITISE preserving all information related to the focu
+ 
+         return messages
+ 
++    # ------------------------------------------------------------------
++
++    SKILL_VIEW_LRU_WINDOW: int = 3
++
++    def _prune_skill_view_results(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++        """Prune skill_view tool results outside the LRU window.
++
++        Keeps the most recent ``SKILL_VIEW_LRU_WINDOW`` distinct skill names
++        and replaces their tool-result *content* with a stub ``[已卸载]``
++        JSON payload.  Stub (not delete) preserves message role alternation;
++        a re-``load`` is a single ``skill_view()`` call, effectively free.
++
++        Runs as a post-processing step inside ``compress()``, after
++        ``_sanitize_tool_pairs`` and ``_strip_historical_media``.
++        """
++        # Pass 1: collect every skill_view call_id + skill_name + index
++        sv_calls: list[tuple[str, str, int]] = []  # (call_id, skill_name, msg_idx)
++        for i, msg in enumerate(messages):
++            if msg.get("role") != "assistant":
++                continue
++            for tc in msg.get("tool_calls") or []:
++                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
++                if fn.get("name") != "skill_view":
++                    continue
++                cid = self._get_tool_call_id(tc)
++                try:
++                    args = json.loads(fn.get("arguments", "{}"))
++                    skill_name = args.get("name", "")
++                except (json.JSONDecodeError, TypeError):
++                    skill_name = ""
++                if cid and skill_name:
++                    sv_calls.append((cid, skill_name, i))
++
++        if not sv_calls:
++            return messages
++
++        # Pass 2: build LRU window (last N distinct = most recent first)
++        if self.SKILL_VIEW_LRU_WINDOW <= 0:
++            lru_set: set[str] = set()  # window=0 or negative → evict all
++        else:
++            lru_skills: list[str] = []
++            for _cid, skill_name, _idx in reversed(sv_calls):
++                if skill_name not in lru_skills:
++                    lru_skills.append(skill_name)
++                    if len(lru_skills) >= self.SKILL_VIEW_LRU_WINDOW:
++                        break
++            lru_set = set(lru_skills)
++
++        # Pass 3: find call_ids that fall outside the window
++        outside_cids: set[str] = set()
++        for cid, skill_name, _idx in sv_calls:
++            if skill_name not in lru_set:
++                outside_cids.add(cid)
++
++        if not outside_cids:
++            return messages
++
++        # Pass 4: replace the tool-result content with a stub
++        n_pruned = 0
++        patched: list[Dict[str, Any]] = []
++        for msg in messages:
++            if msg.get("role") == "tool" and msg.get("tool_call_id") in outside_cids:
++                orig = msg.get("content", "")
++                stub_name = "unknown"
++                try:
++                    stub_name = json.loads(orig).get("name", "unknown")
++                except (json.JSONDecodeError, TypeError):
++                    pass
++                patched.append({
++                    "role": "tool",
++                    "tool_call_id": msg["tool_call_id"],
++                    "content": json.dumps({
++                        "success": True,
++                        "name": stub_name,
++                        "content": "[已卸载]",
++                    }),
++                })
++                n_pruned += 1
++            else:
++                patched.append(msg)
++
++        if n_pruned and not self.quiet_mode:
++            logger.info("Pruned %d skill_view tool result(s) outside LRU window", n_pruned)
++
++        return patched
++
+     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
+         """Push a compress-start boundary forward past any orphan tool results.
+ 
+@@ -2659,6 +2745,9 @@ This compaction should PRIORITISE preserving all information related to the focu
+         # Port of Kilo-Org/kilocode#9434.
+         compressed = _strip_historical_media(compressed)
+ 
++        # Phase 5: Prune skill_view tool results outside the LRU window
++        compressed = self._prune_skill_view_results(compressed)
++
+         new_estimate = estimate_messages_tokens_rough(compressed)
+         saved_estimate = display_tokens - new_estimate
+ 
