@@ -5,6 +5,10 @@
 
 **Core mantra: evict when full, reload when needed.**
 
+> **V2 (2026-07-03):** Window size should adapt to the model's context length.  
+> A fixed `WINDOW=3` makes sense for 32K models, but for 100M models pruning isn't needed.  
+> See [V2: Adaptive Window](#v2-adaptive-window) below.
+
 <p align="center">
   <img src="https://img.shields.io/badge/Hermes%20Agent-4A00FF?style=flat-square" alt="Hermes Agent"/>
   <img src="https://img.shields.io/badge/Claude%20Code-CC7832?style=flat-square" alt="Claude Code"/>
@@ -203,3 +207,46 @@ skill-context-slide/
 ## License
 
 MIT
+
+---
+
+## V2: Adaptive Window
+
+> 2026-07-03 · Design note
+
+### The Insight
+
+A fixed `WINDOW=3` makes perfect sense for a 32K-context model like Qwen 2.5 7B (9% of context for 3 skills). But on a 100M-context model like DeepSeek V4 Flash, 3 skills consume 0.003% — essentially free.
+
+| Model | Context | 3 skills % | Right window |
+|-------|---------|-----------|-------------|
+| Llama 3.2 3B | 8K | ~37% | 1 |
+| Qwen 2.5 7B | 32K | ~9% | 3 |
+| GPT-4o | 128K | ~2% | 8 |
+| DeepSeek V4 Flash | 100M | ~0.003% | off |
+
+**Fixed window can't serve the whole ecosystem.**
+
+### Proposed Formula
+
+```python
+avg_skill_size = 3000       # empirical: average SKILL.md ~3K tokens
+safety_factor = 4           # reserve 1/safety_factor of budget for skills
+
+context_window = model.config.context_length or 32768
+max_window = context_window // avg_skill_size // safety_factor
+
+window_size = max(1, min(max_window, SCS_MAX_WINDOW))
+```
+
+Examples:
+- 32K / 3000 / 4 = **window 3**
+- 128K / 3000 / 4 = **window 10**
+- 100M / 3000 / 4 = window 8333 → **pruning disabled**
+
+### Implementation Notes
+
+- Read `model.context_length` from config or model metadata
+- `SKILL_VIEW_LRU_WINDOW = 0` → disable pruning entirely (keep all skills)
+- `SCS_MAX_WINDOW` env var as hard cap
+- Floor of 1 (at least keep the most recent skill)
