@@ -5,6 +5,15 @@
 
 **Core mantra: evict when full, reload when needed.**
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Hermes%20Agent-4A00FF?style=flat-square" alt="Hermes Agent"/>
+  <img src="https://img.shields.io/badge/Claude%20Code-CC7832?style=flat-square" alt="Claude Code"/>
+  <img src="https://img.shields.io/badge/OpenAI%20Codex-412991?style=flat-square" alt="OpenAI Codex"/>
+  <img src="https://img.shields.io/badge/Cline-00A67E?style=flat-square" alt="Cline"/>
+  <img src="https://img.shields.io/badge/Continue-000000?style=flat-square" alt="Continue"/>
+  <img src="https://img.shields.io/badge/Cursor-6C47FF?style=flat-square" alt="Cursor"/>
+</p>
+
 ---
 
 ## The Problem
