@@ -46,6 +46,34 @@ python -m pytest tests/agent/test_skill_view_lru_pruning.py -v
 #    LRU window will be stubbed automatically.
 ```
 
+## ⚠️ Restart Required After Patching
+
+SCS lives in Python source code that is loaded into memory when a process starts. Whether you need to restart depends on **how** you run Hermes:
+
+| Deployment | Behavior | Restart needed? |
+|---|---|---|
+| **CLI** (`hermes chat`) | Every invocation is a **fresh Python process**. The patched `.py` is read from disk each time. | **No** ✅ — next `hermes chat` picks it up automatically. |
+| **Gateway** (`hermes gateway`) | A single long-lived Python process that caches all imports in memory on startup. | **Yes** 🔄 — run `hermes gateway restart` (or `/restart` in-session if you have admin rights). |
+| **Desktop** (`hermes desktop`) | The Electron app embeds a gateway process in the background. | **Yes** 🔄 — quit the app (`Cmd+Q` / `Ctrl+Q`) and relaunch it. On Linux, also check the background gateway with `hermes gateway restart`. |
+
+### How to verify it's active
+
+After restarting, check the gateway logs for the SCS pruning message:
+
+```bash
+# Wait for a compression to occur (usually when the session hits ~850K tokens),
+# then search the log
+grep "Pruned.*skill_view.*LRU" ~/.hermes/logs/gateway.log
+# Expected: "Pruned N skill_view tool result(s) outside LRU window"
+```
+
+Or run the test suite to confirm the code is wired correctly:
+
+```bash
+python -m pytest tests/agent/test_skill_view_lru_pruning.py -v
+# Expected: 11/11 passed
+```
+
 ## What the Patch Changes
 
 **Single file:** `agent/context_compressor.py`, two insertion points (107 lines added, 0 removed):
