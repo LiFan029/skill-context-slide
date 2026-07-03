@@ -1,58 +1,78 @@
-# skill-context-slide
+# skill-context-slide (SCS)
 
-> **SCS** — 当 agent 调 tool 加载外部知识后，压缩时用 LRU 滑动窗口 + stub 替换来管理上下文。
+> **LRU sliding window + stub eviction for agent-loaded external knowledge.**  
+> When compression fires, only the last N distinct skill results survive; older ones get stubbed. Reload on demand is free.
 
-**核心口诀：满了就踢，要了再装。**
+**Core mantra: evict when full, reload when needed.**
 
-## 解决的问题
+---
 
-Agent 调用 `skill_view(name)` 加载技能内容后，即使话题已经切换，这些内容仍占据 token 预算。SCS 在 context compression 触发时，只保留最近 N 个不同技能名的完整内容，窗口外的替换为 `[已卸载]` stub。
+## The Problem
 
-## 设计层次
+An agent calls `skill_view(name)` (or any knowledge-loading tool) to fetch external content into conversation context. After the topic shifts, that content becomes stale but keeps consuming token budget, diluting the agent's attention and degrading independent reasoning.
+
+SCS solves this by maintaining a **Least Recently Used (LRU) sliding window** over loaded knowledge. During context compression, only the most recent N distinct items are kept intact; everything outside the window is replaced with a lightweight stub (`[已卸载]` / `[evicted]`).
+
+## Design Layers
 
 ```
-┌─────────────────────────────────────┐
-│  A: 设计模式（docs/pattern.md）       │ ← 通用思路
-│  适用于任何 agent 的知识加载管理       │
-├─────────────────────────────────────┤
-│  B: Hermes 补丁路径                  │ ← 具体实现
-│  两条 patch + 一键 revert            │
-├─────────────────────────────────────┤
-│  C: test_skill_view_lru_pruning.py   │ ← 验证
-│  11个用例覆盖正常+边界+异常           │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│ A: Design Pattern (docs/pattern.md)  │ ← universal idea
+│ Applicable to any agent architecture │
+├──────────────────────────────────────┤
+│ B: Hermes Agent patch + revert tool  │ ← concrete implementation
+│ Two precise patches + revert.py      │
+├──────────────────────────────────────┤
+│ C: Test suite (tests/)               │ ← verification
+│ 11 test cases: normal + edge + error │
+└──────────────────────────────────────┘
 ```
 
-## Hermes Agent 安装
+## Hermes Agent Installation
 
-### 补丁内容
+### What the patch does
 
-1. 在 `agent/context_compressor.py` 的 `_sanitize_tool_pairs` 和 `_align_boundary_forward` 之间插入 `SKILL_VIEW_LRU_WINDOW` 常量和 `_prune_skill_view_results` 方法
-2. 在 `compress()` 的 `_strip_historical_media` 之后添加调用 `compressed = self._prune_skill_view_results(compressed)`
+Two changes to `agent/context_compressor.py`:
 
-### 还原
+1. Insert the `SKILL_VIEW_LRU_WINDOW` constant and `_prune_skill_view_results()` method between `_sanitize_tool_pairs` and `_align_boundary_forward`
+2. Add the call `compressed = self._prune_skill_view_results(compressed)` inside `compress()`, right after `_strip_historical_media`
+
+### Revert
 
 ```bash
-python scripts/revert.py --backup
-python scripts/revert.py --dry-run   # 预览
+python scripts/revert.py --backup       # backup + revert
+python scripts/revert.py --dry-run      # preview only
 ```
 
-### 验证
+### Verify
 
 ```bash
 cd <hermes-agent-root>
 python -m pytest tests/agent/test_skill_view_lru_pruning.py -v
 ```
 
-## 测试覆盖
+## Test Coverage
 
-| 类别 | 用例数 | 覆盖点 |
-|------|--------|--------|
-| 正常路径 | 6 | 空输入、无调用、保留、淘汰、去重、交替完整 |
-| 边界条件 | 5 | 批量加载、混合工具、孤立 call_id、窗口=0、重载 |
-| **合计** | **11** | **全部通过 ✅** |
+| Category     | Cases | What it covers                              |
+|-------------|-------|---------------------------------------------|
+| Normal path | 6     | empty input, no-op, keep, evict, dedup, alternation |
+| Edge cases  | 5     | batch load, mixed tools, orphan call_id, window=0, reload |
+| **Total**   | **11**| **100% passing**                             |
 
-完整报告：`docs/verification-report.md`
+Full report: `docs/verification-report.md`
+
+## Full Round-Trip Verification
+
+```
+  State              Test result
+┌─────────────┬────────────────────────────┐
+│ Patched     │ 11/11 passed (0.52s)       │
+├─────────────┼────────────────────────────┤
+│ Reverted    │ 11/11 failed (correct)     │
+├─────────────┼────────────────────────────┤
+│ Re-applied  │ 11/11 passed (0.54s)       │
+└─────────────┴────────────────────────────┘
+```
 
 ## License
 

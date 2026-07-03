@@ -1,100 +1,98 @@
-# SCS — Skill-Context-Slide 验证报告
+# SCS — Skill-Context-Slide: Verification Report
 
-> 2026-07-03 · 全闭环测试
+> 2026-07-03 · Full round-trip test
 
-## 概述
+## Overview
 
-SCS 在 Hermes Agent 的 `ContextCompressor.compress()` 中维护一个 LRU 滑动窗口。
-compression 触发时，窗口外的 `skill_view` tool result 被 stub 替换，释放 token 预算。
-窗口默认大小 = 3，可配置。
+SCS maintains an LRU sliding window inside Hermes Agent's `ContextCompressor.compress()`. When compression fires, `skill_view` tool results outside the window are replaced with a stub, freeing token budget. Default window size = 3, configurable via `SKILL_VIEW_LRU_WINDOW`.
 
-## 被测组件
+## Components Under Test
 
-| 项目 | 值 |
-|------|-----|
-| 模块 | `agent/context_compressor.py` |
-| 方法 | `ContextCompressor._prune_skill_view_results()` |
-| 常量 | `SKILL_VIEW_LRU_WINDOW: int = 3` |
-| 调用点 | `compress()` Phase 5，`_strip_historical_media` 之后 |
-| 测试文件 | `tests/agent/test_skill_view_lru_pruning.py` |
-| 行数（核心逻辑） | ~80 行 |
-| 行数（测试） | ~335 行 |
+| Item | Value |
+|------|-------|
+| Module | `agent/context_compressor.py` |
+| Method | `ContextCompressor._prune_skill_view_results()` |
+| Constant | `SKILL_VIEW_LRU_WINDOW: int = 3` |
+| Call site | `compress()` Phase 5, after `_strip_historical_media` |
+| Test file | `tests/agent/test_skill_view_lru_pruning.py` |
+| Core logic | ~80 lines |
+| Tests | ~335 lines |
 
-## 算法（4 Pass）
+## Algorithm (4 Pass)
 
-1. **收集** — 遍历 assistant 消息，找到 `function.name == "skill_view"` 的 tool_calls
-2. **LRU 窗口** — 从后往前扫描，取最近 N 个不同 skill_name（窗口 ≤ 0 时全部卸载）
-3. **标记** — 窗口外的 call_id 加入 `outside_cids`
-4. **替换** — 匹配的 tool result content 替换为 `{"success":true,"name":"...","content":"[已卸载]"}`
+1. **Collect** — iterate assistant messages, find `function.name == "skill_view"` tool_calls
+2. **LRU window** — walk in reverse, keep N distinct skill names (≤ 0 → evict all)
+3. **Mark** — call_ids outside window → `outside_cids` set
+4. **Replace** — matching tool result content → `{"success":true,"name":"...","content":"[已卸载]"}`
 
-## 测试矩阵
+## Test Matrix
 
-### 正常路径
+### Normal Path
 
-| # | 测试 | 预期 | 结果 |
-|---|------|------|------|
-| 1 | 空输入 | `[]` 原样返回 | ✅ |
-| 2 | 无 skill_view 调用 | 消息列表不变 | ✅ |
-| 3 | 1 个技能（≤窗口） | 内容保留 | ✅ |
-| 4 | 4 个技能（>窗口） | 最早 1 个被 stub 替换 | ✅ |
-| 5 | 同名技能重复加载 | 去重，只占 1 个窗口位 | ✅ |
-| 6 | 消息交替完整 | stub 不改变消息总数 | ✅ |
+| # | Test | Expectation | Result |
+|---|------|-------------|--------|
+| 1 | Empty input | `[]` returned as-is | ✅ |
+| 2 | No skill_view calls | Messages unchanged | ✅ |
+| 3 | 1 skill (≤ window) | Content preserved | ✅ |
+| 4 | 4 skills (> window) | Earliest 1 gets stubbed | ✅ |
+| 5 | Same skill loaded multiple times | Deduped, 1 window slot | ✅ |
+| 6 | Message alternation preserved | Stub doesn't change message count | ✅ |
 
-### 边界条件
+### Edge Cases
 
-| # | 测试 | 预期 | 结果 |
-|---|------|------|------|
-| 7 | 同一条消息批量调 skill_view | 每个独立计入窗口 | ✅ |
-| 8 | 混合其他 tool（web_search 等） | 非 skill_view 不受影响 | ✅ |
-| 9 | 孤立 tool_call_id | 不崩溃，安全忽略 | ✅ |
-| 10 | 窗口=0 边缘情况 | 全部卸载 | ✅ |
-| 11 | 卸载后重载同名技能 | 新内容保留，LRU 重算 | ✅ |
+| # | Test | Expectation | Result |
+|---|------|-------------|--------|
+| 7 | Batch skill_view in one assistant msg | Each counted independently | ✅ |
+| 8 | Mixed with other tools (web_search) | Non-skill_view untouched | ✅ |
+| 9 | Orphan tool_call_id | Silent ignore, no crash | ✅ |
+| 10 | Window = 0 | Everything evicted | ✅ |
+| 11 | Reload after eviction | New content preserved, LRU recalculated | ✅ |
 
-## 全闭环往返测试
+## Full Round-Trip
 
-| 步骤 | 操作 | 测试结果 | 耗时 |
-|------|------|----------|------|
-| ① | 安装 patch | 11/11 ✅ | 0.52s |
-| ② | `revert.py` 还原 | 3 处改动全部回滚 | — |
-| ③ | 还原后验证 | 11/11 ❌（方法不存在，正确行为） | 0.66s |
-| ④ | 重新应用 patch | 2 次 patch 无冲突 | — |
-| ⑤ | 重装后验证 | 11/11 ✅ | 0.54s |
+| Step | Action | Test result | Time |
+|------|--------|-------------|------|
+| ① | Apply patch | 11/11 ✅ | 0.52s |
+| ② | `revert.py` rollback | All 3 changes reverted | — |
+| ③ | Verify after revert | 11/11 ❌ (method gone — correct) | 0.66s |
+| ④ | Re-apply patch | 0 conflicts | — |
+| ⑤ | Verify after re-apply | 11/11 ✅ | 0.54s |
 
-## 修复记录
+## Bug Fix Record
 
-### Bug: 窗口=0 时 `>=` 条件兜底
+### Bug: window=0 kept 1 skill due to `>=` guard ordering
 
-**症状**：`SKILL_VIEW_LRU_WINDOW=0` 时，Pass 2 的 `if len(lru_skills) >= 0: break` 条件在 append 之后才断，导致始终保留至少 1 个技能。
+**Symptom:** With `SKILL_VIEW_LRU_WINDOW=0`, the condition `if len(lru_skills) >= 0: break` fired *after* appending, so at least 1 skill always survived.
 
-**修复**：增加显式守卫：
+**Fix:** Added explicit guard:
 
 ```python
 if self.SKILL_VIEW_LRU_WINDOW <= 0:
     lru_set: set[str] = set()  # window=0 or negative → evict all
 else:
-    # 原有 LRU 构建逻辑
+    # original LRU-building logic
 ```
 
-## 环境
+## Environment
 
-| 项目 | 值 |
-|------|-----|
+| Item | Value |
+|------|-------|
 | Python | 3.11.15 |
 | pytest | 9.0.2 |
 | Hermes Agent | commit 2ecb6f7fe (main) |
-| 测试运行 | `cd ~/.hermes/hermes-agent && python -m pytest tests/agent/test_skill_view_lru_pruning.py -v` |
+| Runner | `cd ~/.hermes/hermes-agent && python -m pytest tests/agent/test_skill_view_lru_pruning.py -v` |
 
-## 还原工具
+## Revert Tool
 
 ```bash
-# 查看改动
+# Preview changes
 python scripts/revert.py --dry-run
 
-# 一键还原（含备份）
+# Revert with automatic backup
 python scripts/revert.py --backup
 
-# 指定 Hermes 路径
+# Specify Hermes path
 python scripts/revert.py --hermes-path /opt/hermes-agent
 ```
 
-支持自动检测常见路径：`cwd` → `cwd/hermes-agent` → `~/.hermes/hermes-agent` → `~/hermes-agent` → `/opt/hermes-agent`。
+Auto-discovers Hermes at: `cwd` → `cwd/hermes-agent` → `~/.hermes/hermes-agent` → `~/hermes-agent` → `/opt/hermes-agent`.
